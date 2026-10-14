@@ -1,0 +1,19 @@
+services:
+  ce308-poller:
+    build: .
+    container_name: ce308_poller
+    restart: unless-stopped
+
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+
+    network_mode: host
+
+    env_file:
+      - .env
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
