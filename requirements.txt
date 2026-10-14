@@ -1,0 +1,8 @@
+# Serial communication with CE901 device
+pyserial==3.5
+
+# MQTT client (v2.x is required for the script's CallbackAPIVersion)
+paho-mqtt==2.1.0
+
+# Loading environment variables from .env file
+python-dotenv==1.0.1
