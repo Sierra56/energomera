@@ -1,7 +1,7 @@
 services:
   ce308-poller:
     build: .
-    container_name: ce308_poller
+    container_name: ce308_poller_dev
     restart: unless-stopped
 
     devices:
