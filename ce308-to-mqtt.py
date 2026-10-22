@@ -2,7 +2,7 @@
 """
 CE308 -> MQTT -> Home Assistant
 Периодический опрос счетчика через CE901 с публикацией в MQTT.
-Читает: энергию 1.8.0/1.8.1/1.8.2, напряжение по фазам, серийный номер,
+Читает: энергию 1.8.0/1.8.1/1.8.2, напряжение по фазам,
 дату последнего изменения конфигурации.
 Управление периодом опроса — через MQTT-команды.
 """
@@ -70,11 +70,6 @@ VOLTAGE_REGS = {
     "L2": (1, 0, 52, 7, 0, 255),
     "L3": (1, 0, 72, 7, 0, 255),
 }
-# Серийный номер: пробуем по очереди (class 1, data). Можно задать OBIS_SERIAL="1:0.0.96.1.0.255"
-SERIAL_CANDIDATES = parse_obis_list("OBIS_SERIAL", [
-    (1, (0, 0, 96, 1, 0, 255)),
-    (1, (0, 0, 96, 1, 1, 255)),
-])
 # Дата последнего изменения конфигурации. Можно задать OBIS_CONFIG_DATE="1:0.0.96.2.1.255"
 CONFIG_DATE_CANDIDATES = parse_obis_list("OBIS_CONFIG_DATE", [
     (1, (0, 0, 96, 2, 1, 255)),
@@ -158,15 +153,6 @@ def decode_get_response(info: bytes):
     return decode_data(info, 7)[0]
 
 
-def decode_text(v) -> str:
-    """Серийный номер: строка / октеты / число -> str."""
-    if isinstance(v, (bytes, bytearray)):
-        if v and all(32 <= c < 127 for c in v):
-            return v.decode("ascii").strip()
-        return v.hex().upper()
-    return str(v)
-
-
 def decode_datetime(v):
     """COSEM date-time (12 байт) или date (5 байт) -> ISO-строка с часовым поясом."""
     if not isinstance(v, (bytes, bytearray)) or len(v) not in (5, 12):
@@ -192,13 +178,11 @@ def decode_datetime(v):
 
 
 _scaler_cache = {}      # (obis) -> (scaler, unit): множитель не меняется, читаем один раз
-_serial_cache = None    # серийный номер читаем один раз
 
 
 def read_meter(port: str = COM_PORT) -> dict:
-    """Один сеанс связи: энергия (обязательно) + напряжение, серийный номер,
-    дата изменения конфигурации (необязательно, ошибки не прерывают опрос)."""
-    global _serial_cache
+    """Один сеанс связи: энергия (обязательно) + напряжение и дата изменения
+    конфигурации (необязательно, ошибки не прерывают опрос)."""
     ser = serial.Serial(port, BAUDRATE, serial.EIGHTBITS, serial.PARITY_NONE,
                         serial.STOPBITS_ONE, timeout=TIMEOUT)
     ns = 0
@@ -253,7 +237,7 @@ def read_meter(port: str = COM_PORT) -> dict:
                     return v
         return None
 
-    result = {"energy": {}, "voltage": {}, "serial": None, "config_date": None}
+    result = {"energy": {}, "voltage": {}, "config_date": None}
     try:
         xchg(build_frame(0x93, SNRM))
         resp = xchg(i_frame(AARQ))
@@ -270,9 +254,6 @@ def read_meter(port: str = COM_PORT) -> dict:
                 v = optional(f"напряжение {phase}", lambda: get_register(obis))
                 if v is not None:
                     result["voltage"][phase] = v[0]
-            if _serial_cache is None:
-                _serial_cache = first_of(SERIAL_CANDIDATES, 2, decode_text, "серийный номер")
-            result["serial"] = _serial_cache
             result["config_date"] = first_of(CONFIG_DATE_CANDIDATES, 2, decode_datetime,
                                              "дата изменения конфигурации")
         except OSError as e:                      # потеряна связь — отдаём то, что успели
@@ -295,7 +276,6 @@ connected = threading.Event()
 T_AVAIL = f"{MQTT_TOPIC}/availability"
 T_STATUS = f"{MQTT_TOPIC}/status"
 T_LAST = f"{MQTT_TOPIC}/last_update"
-T_SERIAL = f"{MQTT_TOPIC}/serial"
 T_CONFIG_DATE = f"{MQTT_TOPIC}/config_change"
 T_INTERVAL = f"{MQTT_TOPIC}/status/poll_interval"
 T_SET_INTERVAL = f"{MQTT_TOPIC}/set/poll_interval"
@@ -324,7 +304,7 @@ def publish_interval_state(client):
 
 
 def publish_discovery(client: mqtt.Client):
-    """MQTT Auto Discovery: энергия, напряжение по фазам, серийный номер,
+    """MQTT Auto Discovery: энергия, напряжение по фазам,
     дата изменения конфигурации, период опроса (number), кнопка «опросить сейчас»,
     статус и время последнего обновления."""
     device = {
@@ -368,14 +348,6 @@ def publish_discovery(client: mqtt.Client):
         voltage("L1"),
         voltage("L2"),
         voltage("L3"),
-        ("sensor", {
-            "name": "Серийный номер",
-            "unique_id": f"{HA_DEVICE_ID}_serial",
-            "state_topic": T_SERIAL,
-            "value_template": "{{ value_json.value }}",
-            "icon": "mdi:identifier",
-            "entity_category": "diagnostic",
-        }),
         ("sensor", {
             "name": "Изменение конфигурации",
             "unique_id": f"{HA_DEVICE_ID}_config_change",
@@ -427,9 +399,10 @@ def publish_discovery(client: mqtt.Client):
         client.publish(topic, json.dumps({**common, **cfg}), retain=True)
         print(f"  discovery [{component}]: {cfg['name']}")
 
-    # удалить старый сенсор «Период опроса» (теперь это number)
-    client.publish(f"{DISCOVERY_PREFIX}/sensor/{HA_DEVICE_ID}/{HA_DEVICE_ID}_poll_interval/config",
-                   "", retain=True)
+    # удалить устаревшие сенсоры («Период опроса» теперь number, серийный номер не опрашивается)
+    for old in ("poll_interval", "serial"):
+        client.publish(f"{DISCOVERY_PREFIX}/sensor/{HA_DEVICE_ID}/{HA_DEVICE_ID}_{old}/config",
+                       "", retain=True)
 
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -491,9 +464,6 @@ def poll_and_publish(client: mqtt.Client):
             client.publish(f"{MQTT_TOPIC}/voltage/{phase}", json.dumps(payload), retain=True)
             print(f"  U {phase}: {volts:.2f} В -> MQTT")
 
-        if data["serial"]:
-            client.publish(T_SERIAL, json.dumps({"value": data["serial"]}), retain=True)
-            print(f"  Серийный номер: {data['serial']}")
         if data["config_date"]:
             client.publish(T_CONFIG_DATE, json.dumps({"value": data["config_date"]}), retain=True)
             print(f"  Изменение конфигурации: {data['config_date']}")
