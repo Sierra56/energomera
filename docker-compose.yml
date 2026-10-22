@@ -1,7 +1,7 @@
 services:
   ce308-poller:
     build: .
-    container_name: ce308_poller
+    container_name: ce308_poller_${PROJECT_PREFIX}
     restart: unless-stopped
 
     devices:
@@ -10,7 +10,7 @@ services:
     network_mode: host
 
     env_file:
-      - .env
+      - .env.${ENV_PREFIX:-main}
 
     logging:
       driver: json-file

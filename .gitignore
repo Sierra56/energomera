@@ -1,6 +1,8 @@
 scripts/
 driver/
 *.env
+.env.main
+.env.dev
 
 # Python
 __pycache__/
